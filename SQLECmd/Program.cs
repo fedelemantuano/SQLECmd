@@ -79,6 +79,10 @@ internal class Program
         {
             Description = "Directory to save JSON formatted results to. Be sure to include the full path in double quotes"
         };
+        var jsonfOpt = new Option<string>("--jsonf")
+        {
+            Description = "File name to save JSON formatted results to. When present, overrides default name"
+        };
         var blobdirOpt = new Option<string>(
             "--blobdir")
         {
@@ -131,6 +135,7 @@ internal class Program
            dOpt,
            csvOpt,
            jsonOpt,
+           jsonfOpt,
            blobdirOpt,
            noblobOpt,
            dedupeOpt,
@@ -146,7 +151,7 @@ internal class Program
         _rootCommand.Description = Header + "\r\n\r\n" + Footer;
 
         _rootCommand.SetAction(result => DoWork(result.GetValue(fOpt), result.GetValue(dOpt), result.GetValue(csvOpt),
-            result.GetValue(jsonOpt), result.GetValue(blobdirOpt), result.GetValue(dedupeOpt), result.GetValue(huntOpt),
+            result.GetValue(jsonOpt), result.GetValue(jsonfOpt), result.GetValue(blobdirOpt), result.GetValue(dedupeOpt), result.GetValue(huntOpt),
             result.GetValue(mapsOpt),result.GetValue(syncOpt),result.GetValue(debugOpt),result.GetValue(traceOpt),result.GetValue(noblobOpt)));
             
         var exitCode = await _rootCommand.Parse(args).InvokeAsync();
@@ -157,7 +162,7 @@ internal class Program
     }
 
     /// <returns>0 on success, 1 for invalid arguments, map errors or files that could not be processed</returns>
-    private static int DoWork(string f, string d, string csv, string json, string blobdir, bool dedupe, bool hunt, string maps, bool sync, bool debug, bool trace, bool noblob)
+    private static int DoWork(string f, string d, string csv, string json, string jsonf, string blobdir, bool dedupe, bool hunt, string maps, bool sync, bool debug, bool trace, bool noblob)
     {
         var levelSwitch = new LoggingLevelSwitch();
 
@@ -185,6 +190,32 @@ internal class Program
             .MinimumLevel.ControlledBy(levelSwitch);
 
         Log.Logger = conf.CreateLogger();
+
+        string jsonFileName = null;
+        if (jsonf != null)
+        {
+            if (string.IsNullOrEmpty(json))
+            {
+                Log.Error("--jsonf requires --json. Exiting");
+                return 1;
+            }
+
+            try
+            {
+                jsonFileName = Path.GetFileName(jsonf);
+                if (string.IsNullOrWhiteSpace(jsonFileName) || jsonFileName == "." || jsonFileName == ".." ||
+                    jsonFileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                {
+                    Log.Error("--jsonf must specify a valid file name. Exiting");
+                    return 1;
+                }
+            }
+            catch (ArgumentException e)
+            {
+                Log.Error("Invalid --jsonf file name: {Message}. Exiting", e.Message);
+                return 1;
+            }
+        }
 
 
         if (sync)
@@ -315,9 +346,18 @@ internal class Program
         if (!string.IsNullOrEmpty(json))
         {
             var baseTime = DateTimeOffset.UtcNow;
-            var jsonOutName = $"{baseTime:yyyyMMddHHmmssffffff}_SQLECmd_Output.json";
-            jsonFullOutName = Path.Combine(json, jsonOutName);
-            jsonWriter = new StreamWriter(new FileStream(jsonFullOutName, FileMode.CreateNew));
+            var jsonOutName = jsonFileName ?? $"{baseTime:yyyyMMddHHmmssffffff}_SQLECmd_Output.json";
+            try
+            {
+                jsonFullOutName = Path.Combine(json, jsonOutName);
+                jsonWriter = new StreamWriter(new FileStream(jsonFullOutName, FileMode.CreateNew));
+            }
+            catch (Exception e)
+            {
+                Log.Fatal(e, "Unable to create JSON output file {FullOutName}: {Message}. Existing files are not overwritten. Exiting",
+                    jsonFullOutName, e.Message);
+                return 1;
+            }
             Log.Information("\tSaving all JSON results to {FullOutName}", jsonFullOutName);
         }
 

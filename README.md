@@ -18,6 +18,7 @@ This repo that contains all the Maps used by Eric Zimmerman's SQLECmd.
     
             csv             Directory to save CSV formatted results to.
             json            Directory to save JSON formatted results to.
+            jsonf           File name to save JSON formatted results to. When present, overrides default name
     
             dedupe          Deduplicate -f or -d files based on SHA-1. First file found wins. Default is TRUE
             hunt            When true, all files are looked at regardless of name and file header is used to identify SQLite files, else filename in map is used to find databases. Default is FALSE
@@ -35,6 +36,20 @@ This repo that contains all the Maps used by Eric Zimmerman's SQLECmd.
               SQLECmd.exe -d "C:\Temp\" --hunt --csv "c:\temp\out"
     
               Short options (single letter) are prefixed with a single dash. Long commands are prefixed with two dashes
+
+### JSON output
+
+`--json <directory>` writes all results from one run to a single JSON Lines file (one object per row).
+By default its name is `<UTC timestamp>_SQLECmd_Output.json`. Use `--jsonf <jsonf>` to choose the exact name:
+
+```text
+SQLECmd.exe -f "C:\Temp\someFile.db" --json "C:\Temp\out" --jsonf results.jsonl
+```
+
+`--jsonf` requires `--json`. As in MFTECmd, only the final file name is used if a path is supplied;
+the output directory always comes from `--json`. The extension is preserved as supplied, and none is added
+if omitted. An empty or invalid file name is rejected. An existing JSON destination is never overwritten: if the
+destination already exists, SQLECmd reports an error and exits with code 1. JSON and CSV can be exported together.
 
 ## Documentation
 

@@ -2,6 +2,8 @@
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using NUnit.Framework;
 
@@ -20,6 +22,12 @@ public class CliTests
     private string _dir;
     private string _cwd;
     private string Csv => Path.Combine(_dir, "csv");
+    private string Json => Path.Combine(_dir, "json");
+
+    private static string[] InvalidJsonFileNames => new[]
+    {
+        "", "   ", ".", "..", "nested" + Path.DirectorySeparatorChar
+    };
 
     [SetUp]
     public void SetUp()
@@ -68,6 +76,14 @@ public class CliTests
     {
         var file = Directory.GetFiles(Csv, "*" + suffix).Should().ContainSingle().Subject;
         return File.ReadAllLines(file);
+    }
+
+    private static void AssertContactsJson(string file)
+    {
+        var lines = File.ReadAllLines(file);
+        lines.Should().HaveCount(20 + 20 + 36 + 20);
+        lines[0].Should().StartWith("{\"FirstName\":\"John\",\"LastName\":\"Doe\",\"SourceFile\":")
+            .And.EndWith(",\"MapDescription\":\"Some rando contacts database example\"}");
     }
 
     [Test]
@@ -143,16 +159,145 @@ public class CliTests
     public void JsonHasOneLinePerRow()
     {
         var (exitCode, output) = Run("-f", SqLiteFileTests.TestFile("Contacts.db"), "--json",
-            Path.Combine(_dir, "json"), "--hunt", "false");
+            Json, "--hunt", "false");
 
         exitCode.Should().Be(0, output);
 
-        var json = Directory.GetFiles(Path.Combine(_dir, "json"), "*_SQLECmd_Output.json").Should().ContainSingle()
+        var json = Directory.GetFiles(Json, "*_SQLECmd_Output.json").Should().ContainSingle()
             .Subject;
-        var lines = File.ReadAllLines(json);
-        lines.Should().HaveCount(20 + 20 + 36 + 20);
-        lines[0].Should().StartWith("{\"FirstName\":\"John\",\"LastName\":\"Doe\",\"SourceFile\":")
-            .And.EndWith(",\"MapDescription\":\"Some rando contacts database example\"}");
+        AssertContactsJson(json);
+    }
+
+    [Test]
+    public void HelpDocumentsJsonFileNameOverride()
+    {
+        var (exitCode, output) = Run("--help");
+
+        exitCode.Should().Be(0, output);
+        var help = Regex.Replace(output, @"\s+", " ");
+        help.Should().Contain("--jsonf <jsonf>");
+        help.Should().Contain("File name to save JSON formatted results to. When present, overrides default name");
+    }
+
+    [TestCase("custom results.json")]
+    [TestCase("custom-results.jsonl")]
+    [TestCase("custom-results")]
+    public void JsonFileNameOverridesDefaultExactly(string name)
+    {
+        var (exitCode, output) = Run("-f", SqLiteFileTests.TestFile("Contacts.db"), "--json", Json,
+            "--jsonf", name, "--hunt", "false");
+
+        exitCode.Should().Be(0, output);
+        Directory.GetFiles(Json).Should().ContainSingle().Which.Should().Be(Path.Combine(Json, name));
+        AssertContactsJson(Path.Combine(Json, name));
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public void JsonFileNameUsesOnlyTheBaseName(bool absolute)
+    {
+        var supplied = absolute
+            ? Path.Combine(_dir, "nested", "custom.json")
+            : Path.Combine("..", "nested", "custom.json");
+
+        var (exitCode, output) = Run("-f", SqLiteFileTests.TestFile("Contacts.db"), "--json", Json,
+            "--jsonf", supplied, "--hunt", "false");
+
+        exitCode.Should().Be(0, output);
+        Directory.GetFiles(Json).Should().ContainSingle().Which.Should().Be(Path.Combine(Json, "custom.json"));
+        AssertContactsJson(Path.Combine(Json, "custom.json"));
+        Directory.Exists(Path.Combine(_dir, "nested")).Should().BeFalse();
+    }
+
+    [TestCase(false)]
+    [TestCase(true)]
+    public void JsonFileNameRequiresJsonDirectoryBeforeAnyExports(bool withCsv)
+    {
+        var args = new[] { "-f", SqLiteFileTests.TestFile("Contacts.db"), "--jsonf", "custom.json" };
+        if (withCsv)
+        {
+            args = args.Concat(new[] { "--csv", Csv }).ToArray();
+        }
+
+        var (exitCode, output) = Run(args);
+
+        exitCode.Should().Be(1, output);
+        output.Should().Contain("--jsonf requires --json");
+        Directory.Exists(Csv).Should().BeFalse();
+        Directory.Exists(Json).Should().BeFalse();
+    }
+
+    [TestCaseSource(nameof(InvalidJsonFileNames))]
+    public void InvalidJsonFileNameFailsBeforeAnyExports(string name)
+    {
+        var (exitCode, output) = Run("-f", SqLiteFileTests.TestFile("Contacts.db"), "--csv", Csv,
+            "--json", Json, "--jsonf", name);
+
+        exitCode.Should().Be(1, output);
+        output.Should().Contain("--jsonf").And.Contain("file name");
+        Directory.Exists(Csv).Should().BeFalse();
+        Directory.Exists(Json).Should().BeFalse();
+    }
+
+    [Test]
+    public void ExistingJsonDestinationFailsWithoutChangingItsContents()
+    {
+        Directory.CreateDirectory(Json);
+        var destination = Path.Combine(Json, "custom.json");
+        var original = new byte[] { 0, 1, 2, 0xFF };
+        File.WriteAllBytes(destination, original);
+
+        var (exitCode, output) = Run("-f", SqLiteFileTests.TestFile("Contacts.db"), "--json", Json,
+            "--jsonf", "custom.json");
+
+        exitCode.Should().Be(1, output);
+        output.Should().Contain("Unable to create JSON output");
+        File.ReadAllBytes(destination).Should().Equal(original);
+        Directory.GetFiles(Json).Should().ContainSingle().Which.Should().Be(destination);
+    }
+
+    [Test]
+    public void JsonDestinationCannotOverwriteTheInputDatabase()
+    {
+        var input = Path.Combine(_dir, "Contacts.db");
+        File.Copy(SqLiteFileTests.TestFile("Contacts.db"), input);
+        var original = File.ReadAllBytes(input);
+
+        var (exitCode, output) = Run("-f", input, "--json", _dir, "--jsonf", "Contacts.db");
+
+        exitCode.Should().Be(1, output);
+        output.Should().Contain("Unable to create JSON output");
+        File.ReadAllBytes(input).Should().Equal(original);
+    }
+
+    [Test]
+    public void DirectoryInputUsesOneNamedJsonFileAlongsideCsv()
+    {
+        var input = Path.Combine(_dir, "in");
+        var first = Path.Combine(input, "a", "Contacts.db");
+        var second = Path.Combine(input, "b", "Contacts.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(first)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(second)!);
+        File.Copy(SqLiteFileTests.TestFile("Contacts.db"), first);
+        File.Copy(SqLiteFileTests.TestFile("Contacts.db"), second);
+
+        var (exitCode, output) = Run("-d", input, "--csv", Csv, "--json", Json, "--jsonf", "all.jsonl",
+            "--dedupe", "false", "--hunt", "true");
+
+        exitCode.Should().Be(0, output);
+        var destination = Directory.GetFiles(Json).Should().ContainSingle().Subject;
+        destination.Should().Be(Path.Combine(Json, "all.jsonl"));
+        var lines = File.ReadAllLines(destination);
+        lines.Should().HaveCount(2 * (20 + 20 + 36 + 20));
+        var sources = lines.Select(line =>
+        {
+            using var row = JsonDocument.Parse(line);
+            return row.RootElement.GetProperty("SourceFile").GetString();
+        }).ToArray();
+        sources.Should().OnlyContain(source => source == first || source == second);
+        sources.Count(source => source == first).Should().Be(96);
+        sources.Count(source => source == second).Should().Be(96);
+        Directory.GetFiles(Csv, "*.csv").Should().HaveCount(8);
     }
 
     [Test]
